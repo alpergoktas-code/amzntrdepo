@@ -116,3 +116,58 @@ def durum_oku(anahtar: str) -> str | None:
             "SELECT deger FROM bot_durum WHERE anahtar = ?", (anahtar,)
         ).fetchone()
         return row["deger"] if row else None
+
+
+# ── Kategori filtresi ─────────────────────────────────────────────────────────
+
+# Amazon Depo ana kategorileri ve anahtar kelimeleri
+KATEGORI_LISTESI = {
+    "Elektronik":     ["elektronik", "şarj", "bluetooth", "usb", "hdmi", "kablo", "adaptör", "pil", "batarya"],
+    "Bilgisayar":     ["laptop", "notebook", "bilgisayar", "macbook", "klavye", "mouse", "ssd", "monitör", "webcam"],
+    "Moda":           ["gömlek", "pantolon", "elbise", "ceket", "kazak", "tişört", "etek", "mont", "sweatshirt", "hoodie"],
+    "Spor":           ["spor", "ayakkabı", "koşu", "fitness", "yoga", "tayt", "forma", "sneaker", "antrenman"],
+    "Oyun":           ["playstation", "xbox", "nintendo", "controller", "konsol", "joystick", "gaming"],
+    "Kitap":          ["kitap", "book", "roman", "ansiklopedi", "edition", "lenses"],
+    "Ev ve Yaşam":    ["ev", "mutfak", "tava", "tencere", "bardak", "kupa", "yastık", "halı", "perde"],
+    "Oyuncak":        ["oyuncak", "lego", "bebek", "kukla", "tamagotchi"],
+    "Sağlık":         ["sağlık", "vitamin", "takviye", "maske", "medikal"],
+    "Güneş Gözlüğü":  ["güneş gözlüğü", "gözlük", "sunglasses"],
+}
+
+
+def aktif_kategorileri_getir() -> list[str]:
+    """Aktif (seçili) kategorileri döndürür. Boş liste = filtre yok (hepsi)."""
+    with baglanti_al() as conn:
+        row = conn.execute(
+            "SELECT deger FROM bot_durum WHERE anahtar = 'aktif_kategoriler'"
+        ).fetchone()
+        if not row or not row["deger"]:
+            return []
+        return [k.strip() for k in row["deger"].split(",") if k.strip()]
+
+
+def aktif_kategorileri_kaydet(kategoriler: list[str]):
+    """Aktif kategori listesini kaydeder."""
+    deger = ",".join(kategoriler)
+    with baglanti_al() as conn:
+        conn.execute("""
+            INSERT INTO bot_durum (anahtar, deger) VALUES ('aktif_kategoriler', ?)
+            ON CONFLICT(anahtar) DO UPDATE SET deger = excluded.deger
+        """, (deger,))
+
+
+def urun_kategoriye_uyuyor_mu(isim: str) -> bool:
+    """
+    Aktif kategori yoksa True döner (filtre yok).
+    Aktif kategori varsa ürün adı anahtar kelimelerden birini içeriyorsa True.
+    """
+    aktifler = aktif_kategorileri_getir()
+    if not aktifler:
+        return True  # Filtre yok, hepsini geç
+
+    isim_lower = isim.lower()
+    for kategori in aktifler:
+        anahtar_kelimeler = KATEGORI_LISTESI.get(kategori, [])
+        if any(kelime in isim_lower for kelime in anahtar_kelimeler):
+            return True
+    return False

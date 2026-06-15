@@ -120,9 +120,10 @@ def magazayi_tara(manuel: bool = False, hedef_chat=None):
             db.urun_kaydet(isim, fiyat, urun["gorsel_url"], urun["link"], urun["stok_adet"])
 
             if ilk_tarama_bitti or manuel:
-                log.info("YENİ ÜRÜN: %.60s @ %.2f TL", isim, fiyat)
-                notifier.yeni_urun_bildir(bot, chat, urun)
-                bildirim_sayisi += 1
+                if db.urun_kategoriye_uyuyor_mu(isim):
+                    log.info("YENİ ÜRÜN: %.60s @ %.2f TL", isim, fiyat)
+                    notifier.yeni_urun_bildir(bot, chat, urun)
+                    bildirim_sayisi += 1
 
         else:
             # ── Zaten var → fiyat kontrolü ──────────────────────────────────
@@ -138,8 +139,9 @@ def magazayi_tara(manuel: bool = False, hedef_chat=None):
                     )
                     db.urun_kaydet(isim, fiyat, urun["gorsel_url"], urun["link"], urun["stok_adet"])
                     db.fiyat_gecmisi_kaydet(isim, eski_fiyat, fiyat)
-                    notifier.fiyat_dustu_bildir(bot, chat, urun, eski_fiyat, indirim)
-                    bildirim_sayisi += 1
+                    if db.urun_kategoriye_uyuyor_mu(isim):
+                        notifier.fiyat_dustu_bildir(bot, chat, urun, eski_fiyat, indirim)
+                        bildirim_sayisi += 1
                 else:
                     # Eşiğin altında düşüş — sessizce fiyatı güncelle
                     db.urun_kaydet(isim, fiyat, urun["gorsel_url"], urun["link"], urun["stok_adet"])
@@ -209,6 +211,96 @@ def cmd_durum(message):
     bot.send_message(message.chat.id, metin, parse_mode="HTML")
 
 
+
+@bot.message_handler(commands=["kategori"])
+def cmd_kategori(message):
+    """Kategori filtresi ayar menüsü."""
+    _kategori_menu_gonder(message.chat.id)
+
+
+def _kategori_menu_gonder(chat_id):
+    aktifler = db.aktif_kategorileri_getir()
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    butonlar = []
+    for kategori in db.KATEGORI_LISTESI.keys():
+        isaretli = "✅" if kategori in aktifler else "⬜"
+        butonlar.append(
+            telebot.types.InlineKeyboardButton(
+                f"{isaretli} {kategori}",
+                callback_data=f"kat_{kategori}"
+            )
+        )
+    markup.add(*butonlar)
+    markup.add(telebot.types.InlineKeyboardButton("🗑 Filtreyi Temizle (Hepsini Göster)", callback_data="kat_temizle"))
+
+    aktif_metin = ", ".join(aktifler) if aktifler else "Yok (tüm ürünler bildiriliyor)"
+    metin = (
+        "📂 <b>Kategori Filtresi</b>
+
+"
+        f"Aktif kategoriler: <b>{aktif_metin}</b>
+
+"
+        "Seçili kategorilerdeki ürünler bildirilir.
+"
+        "Hiçbiri seçili değilse tüm ürünler bildirilir."
+    )
+    bot.send_message(chat_id, metin, parse_mode="HTML", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("kat_"))
+def callback_kategori(call):
+    secim = call.data[4:]  # "kat_" prefixini kaldır
+    aktifler = db.aktif_kategorileri_getir()
+
+    if secim == "temizle":
+        db.aktif_kategorileri_kaydet([])
+        bot.answer_callback_query(call.id, "✅ Filtre temizlendi, tüm ürünler bildiriliyor.")
+    elif secim in aktifler:
+        aktifler.remove(secim)
+        db.aktif_kategorileri_kaydet(aktifler)
+        bot.answer_callback_query(call.id, f"⬜ {secim} kaldırıldı.")
+    else:
+        aktifler.append(secim)
+        db.aktif_kategorileri_kaydet(aktifler)
+        bot.answer_callback_query(call.id, f"✅ {secim} eklendi.")
+
+    # Menüyü güncelle
+    aktifler = db.aktif_kategorileri_getir()
+    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
+    butonlar = []
+    for kategori in db.KATEGORI_LISTESI.keys():
+        isaretli = "✅" if kategori in aktifler else "⬜"
+        butonlar.append(
+            telebot.types.InlineKeyboardButton(
+                f"{isaretli} {kategori}",
+                callback_data=f"kat_{kategori}"
+            )
+        )
+    markup.add(*butonlar)
+    markup.add(telebot.types.InlineKeyboardButton("🗑 Filtreyi Temizle (Hepsini Göster)", callback_data="kat_temizle"))
+
+    aktif_metin = ", ".join(aktifler) if aktifler else "Yok (tüm ürünler bildiriliyor)"
+    metin = (
+        "📂 <b>Kategori Filtresi</b>
+
+"
+        f"Aktif kategoriler: <b>{aktif_metin}</b>
+
+"
+        "Seçili kategorilerdeki ürünler bildirilir.
+"
+        "Hiçbiri seçili değilse tüm ürünler bildirilir."
+    )
+    try:
+        bot.edit_message_text(
+            metin, call.message.chat.id, call.message.message_id,
+            parse_mode="HTML", reply_markup=markup
+        )
+    except Exception:
+        pass
+
+
 @bot.message_handler(commands=["istatistik"])
 def cmd_istatistik(message):
     """Fiyat düşüşü istatistiklerini gösterir."""
@@ -229,6 +321,7 @@ def cmd_yardim(message):
         "🛒 <b>Amazon Depo Bot</b>\n\n"
         "Komutlar:\n"
         "/kontrol — Anlık tarama başlat\n"
+        "/kategori — Kategori filtresi\n"
         "/durum — Bot durumunu gör\n"
         "/istatistik — Ürün istatistikleri\n"
         "/yardim — Bu menü"
