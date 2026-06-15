@@ -1,5 +1,5 @@
 """
-scraper.py — Amazon Depo ürün çekme motoru
+scraper.py — Amazon Depo urun cekme motoru
 """
 
 import os
@@ -27,6 +27,9 @@ BASE_URL = (
 SAYFA_BEKLEME  = 3
 ISTEK_TIMEOUT  = 90
 MAX_BOSH_SAYFA = 2
+
+IKINCI_EL_RE = re.compile(r"\(\d+\s+ikinci\s+el", re.IGNORECASE)
+STOK_RE      = re.compile(r"\((\d+)\s+ikinci\s+el", re.IGNORECASE)
 
 
 def _scraper_url(hedef_url: str, render: bool = False) -> str:
@@ -58,35 +61,24 @@ def _sayfa_indir(sayfa_no: int):
             if soup.find("div", {"data-component-type": "s-search-result"}):
                 return yanit
             baslik = soup.find("title")
-            html_kesit = yanit.text[:500].replace("\n", " ")
-            log.info("Sayfa %d [%s] div=0 | Baslik=[%s] | HTML=%s",
+            log.info("Sayfa %d [%s] div=0 | Baslik=[%s]",
                      sayfa_no, mod,
-                     baslik.get_text(strip=True) if baslik else "yok",
-                     html_kesit)
+                     baslik.get_text(strip=True) if baslik else "yok")
             if not render:
                 log.info("Sayfa %d render=true deneniyor...", sayfa_no)
         except requests.RequestException as exc:
-            log.error("Sayfa %d [%s] istek hatası: %s", sayfa_no, mod, exc)
+            log.error("Sayfa %d [%s] istek hatasi: %s", sayfa_no, mod, exc)
     return None
 
 
 def _metin_fiyata(metin: str):
-    """
-    'X.XXX,XX TL (N İkinci El ürün)' → float
-
-    Kritik kural: Fiyat metni mutlaka 'TL' veya '₺' içermeli
-    VE sayı virgüllü ondalık formatta olmalı (Türkçe para birimi formatı).
-    Model numaralarını (TH 2200/S gibi) elemek için
-    metnin 'ikinci el' veya '₺'/'TL' içerdiğini kontrol ediyoruz.
-    """
     try:
-        # Parantez içini at
         temiz = metin.split("(")[0]
-        # TL veya ₺ işaretini kaldır
-        temiz = temiz.replace("TL", "").replace("₺", "").replace("\xa0", "")
-        # Türkçe format: nokta=binlik, virgül=ondalık
-        # Örnek: "1.234,56" → "1234.56"
-        temiz = temiz.replace(".", "").replace(",", ".").strip()
+        temiz = (
+            temiz
+            .replace("TL", "").replace("\u20ba", "").replace("\xa0", "")
+            .replace(".", "").replace(",", ".").strip()
+        )
         m = re.search(r"\d+(?:\.\d+)?", temiz)
         return float(m.group()) if m else None
     except Exception:
@@ -96,37 +88,43 @@ def _metin_fiyata(metin: str):
 def _fiyat_ayristir(urun_soup: BeautifulSoup):
     """
     Donus: (fiyat_str, fiyat_float, stok_adet)
-    Hedef: "25.459,05 TL (1 Ikinci El urun)"
-    """
-    import re as _re
 
-    # Yontem 1: "Ikinci El" ve "TL/lira" iceren element
+    Ornek hedef metin: "25.459,05 TL (1 Ikinci El urun)"
+
+    Kural:
+      - Metin "ikinci el" (buyuk/kucuk harf farksiz) icermeli
+      - Metin TL veya lira isareti icermeli
+      - Parantezden onceki kisim (fiyat) 25 karakterden kisa olmali
+        -> model numaralari ve urun adlari bu siniri gece
+    """
+
+    # Yontem 1: ikinci el metni iceren a/span
     try:
         for el in urun_soup.find_all(["a", "span"]):
             metin = el.get_text(" ", strip=True)
-            if ("TL" not in metin and "₺" not in metin):
-                continue
-            if not _re.search(r"[Iİi]kinci\s+[Ee]l", metin):
+
+            # TL veya lira isareti olmali
+            if "TL" not in metin and "\u20ba" not in metin:
                 continue
 
-            # Parantezden onceki kisim fiyat
+            # "ikinci el" gecmeli
+            if not IKINCI_EL_RE.search(metin):
+                continue
+
+            # Parantezden onceki kisim
             fiyat_kismi = metin.split("(")[0].strip()
 
-            # Fiyat kismi cok uzunsa (urun adi iceriyor) atla
-            if len(fiyat_kismi) > 30:
-                continue
-
-            # Fiyat kisminda rakam olmali
-            if not _re.search(r"\d", fiyat_kismi):
+            # Cok uzunsa urun adi veya model numarasi iceriyor demektir
+            if len(fiyat_kismi) > 25:
                 continue
 
             sayi = _metin_fiyata(fiyat_kismi)
             if not sayi or sayi <= 0:
                 continue
 
-            stok_m = _re.search(r"\((\d+)\s+[Iİi]kinci", metin)
+            stok_m = STOK_RE.search(metin)
             stok = stok_m.group(1) if stok_m else "1"
-            log.debug("Yontem 1: %s TL, %s adet", sayi, stok)
+            log.debug("Yontem 1: %s — %s adet", fiyat_kismi, stok)
             return fiyat_kismi, sayi, stok
     except Exception as exc:
         log.debug("Yontem 1 hata: %s", exc)
@@ -138,9 +136,9 @@ def _fiyat_ayristir(urun_soup: BeautifulSoup):
             if not gizli:
                 continue
             metin = gizli.get_text(strip=True)
-            if "TL" not in metin and "₺" not in metin:
+            if "TL" not in metin and "\u20ba" not in metin:
                 continue
-            if "yildiz" in metin.lower() or "yıldız" in metin.lower():
+            if "yildiz" in metin.lower():
                 continue
             if len(metin) > 20:
                 continue
@@ -155,17 +153,9 @@ def _fiyat_ayristir(urun_soup: BeautifulSoup):
 
 
 def _urun_linki_bul(urun_soup: BeautifulSoup) -> str:
-    """
-    Ürünün Amazon detay sayfası linkini bulur.
-    Önce data-asin'li div'den ASIN alır, sonra fallback olarak
-    h2 içindeki ilk <a> etiketini dener.
-    """
-    # ASIN varsa standart ürün URL'si oluştur (en güvenilir yöntem)
     asin = urun_soup.get("data-asin", "").strip()
     if asin:
         return f"https://www.amazon.com.tr/dp/{asin}"
-
-    # Fallback: h2 içindeki link
     try:
         h2 = urun_soup.find("h2")
         if h2:
@@ -174,13 +164,12 @@ def _urun_linki_bul(urun_soup: BeautifulSoup) -> str:
                 return "https://www.amazon.com.tr" + a["href"]
     except Exception:
         pass
+    return None
 
-    return None   # Link bulunamadı — bu ürün atlanacak
 
-
-def urun_listesi_cek(sayfa_soup: BeautifulSoup) -> list[dict]:
+def urun_listesi_cek(sayfa_soup: BeautifulSoup) -> list:
     div_listesi = sayfa_soup.find_all("div", {"data-component-type": "s-search-result"})
-    log.info("Ham ürün div sayısı: %d", len(div_listesi))
+    log.info("Ham urun div sayisi: %d", len(div_listesi))
     sonuclar = []
     fiyatsiz = 0
     linksiz  = 0
@@ -192,17 +181,14 @@ def urun_listesi_cek(sayfa_soup: BeautifulSoup) -> list[dict]:
                 continue
             isim = isim_el.get_text(strip=True)
 
-            # Link bulunamazsa ürünü atla (# URL Telegram'ı engelliyor)
             link = _urun_linki_bul(urun)
             if not link:
                 linksiz += 1
-                log.debug("Link bulunamadı, atlandı: %.60s", isim)
                 continue
 
             fiyat_str, fiyat_float, stok = _fiyat_ayristir(urun)
             if not fiyat_float:
                 fiyatsiz += 1
-                log.debug("Fiyat bulunamadı, atlandı: %.60s", isim)
                 continue
 
             gorsel_el  = urun.find("img", class_="s-image")
@@ -217,16 +203,16 @@ def urun_listesi_cek(sayfa_soup: BeautifulSoup) -> list[dict]:
                 "stok_adet":  stok,
             })
         except Exception as exc:
-            log.debug("Ürün ayrıştırma hatası: %s", exc)
+            log.debug("Urun ayristirma hatasi: %s", exc)
 
     if fiyatsiz:
-        log.info("%d ürün fiyat bulunamadığı için atlandı.", fiyatsiz)
+        log.info("%d urun fiyat bulunamadigi icin atlandi.", fiyatsiz)
     if linksiz:
-        log.info("%d ürün link bulunamadığı için atlandı.", linksiz)
+        log.info("%d urun link bulunamadigi icin atlandi.", linksiz)
     return sonuclar
 
 
-def tum_sayfalari_tara() -> list[dict]:
+def tum_sayfalari_tara() -> list:
     tum_urunler = []
     bosh_sayfa  = 0
     sayfa_no    = 1
@@ -238,7 +224,7 @@ def tum_sayfalari_tara() -> list[dict]:
         if yanit is None:
             bosh_sayfa += 1
             if bosh_sayfa >= MAX_BOSH_SAYFA:
-                log.info("Boş sayfa limiti aşıldı, tarama durduruluyor.")
+                log.info("Bos sayfa limiti asildi, tarama durduruluyor.")
                 break
             time.sleep(SAYFA_BEKLEME)
             sayfa_no += 1
@@ -254,11 +240,11 @@ def tum_sayfalari_tara() -> list[dict]:
         else:
             bosh_sayfa = 0
             tum_urunler.extend(urunler)
-            log.info("Sayfa %d: %d ürün eklendi. Toplam: %d",
+            log.info("Sayfa %d: %d urun eklendi. Toplam: %d",
                      sayfa_no, len(urunler), len(tum_urunler))
 
         sayfa_no += 1
         time.sleep(SAYFA_BEKLEME)
 
-    log.info("Tarama tamamlandı. Toplam: %d ürün", len(tum_urunler))
+    log.info("Tarama tamamlandi. Toplam: %d urun", len(tum_urunler))
     return tum_urunler
