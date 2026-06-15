@@ -174,12 +174,23 @@ def urun_listesi_cek(sayfa_soup: BeautifulSoup) -> list:
     fiyatsiz = 0
     linksiz  = 0
 
+    ilk_urun_debug = True
     for urun in div_listesi:
         try:
             isim_el = urun.find("h2")
             if not isim_el:
                 continue
             isim = isim_el.get_text(strip=True)
+
+            # İlk üründe TL içeren tüm element metinlerini logla
+            if ilk_urun_debug:
+                ilk_urun_debug = False
+                tl_metinler = [
+                    el.get_text(" ", strip=True)[:80]
+                    for el in urun.find_all(["a", "span"])
+                    if "TL" in el.get_text(" ", strip=True) or "\u20ba" in el.get_text(" ", strip=True)
+                ]
+                log.info("[DEBUG] Ilk urun TL iceren elementler: %s", tl_metinler[:5])
 
             link = _urun_linki_bul(urun)
             if not link:
