@@ -172,7 +172,6 @@ if __name__ == "__main__":
     db.tablolari_olustur()
 
     if db.toplam_urun() > 0:
-        global ilk_tarama_bitti
         ilk_tarama_bitti = True
         log.info("DB'de %d urun var, aktif mod.", db.toplam_urun())
 
