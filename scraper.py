@@ -28,8 +28,10 @@ SAYFA_BEKLEME  = 3
 ISTEK_TIMEOUT  = 90
 MAX_BOSH_SAYFA = 2
 
-IKINCI_EL_RE = re.compile(r"\(\d+\s+ikinci\s+el", re.IGNORECASE)
-STOK_RE      = re.compile(r"\((\d+)\s+ikinci\s+el", re.IGNORECASE)
+# Fiyat: "25.459,05 TL" veya "459 TL" gibi formatlari eslestirir
+FIYAT_RE  = re.compile(r"([\d]{1,3}(?:[.\d]{4})*(?:,\d{2})?)\s*(TL|\u20ba)")
+# Stok: "(1 Ikinci El urun)" veya "(3 ikinci el..." 
+STOK_RE   = re.compile(r"\((\d+)\s+\S*kinci\s+[Ee]l", re.IGNORECASE)
 
 
 def _scraper_url(hedef_url: str, render: bool = False) -> str:
@@ -71,65 +73,45 @@ def _sayfa_indir(sayfa_no: int):
     return None
 
 
-def _metin_fiyata(metin: str):
-    try:
-        temiz = metin.split("(")[0]
-        temiz = (
-            temiz
-            .replace("TL", "").replace("\u20ba", "").replace("\xa0", "")
-            .replace(".", "").replace(",", ".").strip()
-        )
-        m = re.search(r"\d+(?:\.\d+)?", temiz)
-        return float(m.group()) if m else None
-    except Exception:
-        return None
-
-
 def _fiyat_ayristir(urun_soup: BeautifulSoup):
     """
     Donus: (fiyat_str, fiyat_float, stok_adet)
 
-    Ornek hedef metin: "25.459,05 TL (1 Ikinci El urun)"
-
-    Kural:
-      - Metin "ikinci el" (buyuk/kucuk harf farksiz) icermeli
-      - Metin TL veya lira isareti icermeli
-      - Parantezden onceki kisim (fiyat) 25 karakterden kisa olmali
-        -> model numaralari ve urun adlari bu siniri gece
+    Yontem: TL iceren ve 'kinci El' gecen her elementi tara.
+    Fiyati regex ile cikar — boylece uzun metinlerde de calisir:
+      "Diger satin alma secenekleri 25.459,05 TL (1 Ikinci El urun)"
     """
-
-    # Yontem 1: ikinci el metni iceren a/span
-    try:
-        for el in urun_soup.find_all(["a", "span"]):
+    for el in urun_soup.find_all(["a", "span"]):
+        try:
             metin = el.get_text(" ", strip=True)
 
-            # TL veya lira isareti olmali
-            if "TL" not in metin and "\u20ba" not in metin:
+            # "kinci El" gecmeli (I/i farki yok, basi atlayarak eslesir)
+            if not STOK_RE.search(metin):
                 continue
 
-            # "ikinci el" gecmeli
-            if not IKINCI_EL_RE.search(metin):
+            # Fiyati regex ile bul
+            fiyat_m = FIYAT_RE.search(metin)
+            if not fiyat_m:
                 continue
 
-            # Parantezden onceki kisim
-            fiyat_kismi = metin.split("(")[0].strip()
+            fiyat_str = fiyat_m.group(0).strip()   # "25.459,05 TL"
+            ham_sayi  = fiyat_m.group(1)            # "25.459,05"
 
-            # Cok uzunsa urun adi veya model numarasi iceriyor demektir
-            if len(fiyat_kismi) > 25:
-                continue
-
-            sayi = _metin_fiyata(fiyat_kismi)
-            if not sayi or sayi <= 0:
+            # Turkce formatini float'a cevir
+            sayi = float(ham_sayi.replace(".", "").replace(",", "."))
+            if sayi <= 0:
                 continue
 
             stok_m = STOK_RE.search(metin)
-            stok = stok_m.group(1) if stok_m else "1"
-            log.debug("Yontem 1: %s — %s adet", fiyat_kismi, stok)
-            return fiyat_kismi, sayi, stok
-    except Exception as exc:
-        log.debug("Yontem 1 hata: %s", exc)
+            stok   = stok_m.group(1) if stok_m else "1"
 
-    # Yontem 2: .a-price > .a-offscreen
+            log.debug("Fiyat: %s — %s adet", fiyat_str, stok)
+            return fiyat_str, sayi, stok
+
+        except Exception as exc:
+            log.debug("Element hatasi: %s", exc)
+
+    # Yontem 2: .a-price > .a-offscreen (TL zorunlu, yildiz yasak)
     try:
         for kutu in urun_soup.find_all("span", class_="a-price"):
             gizli = kutu.find("span", class_="a-offscreen")
@@ -138,21 +120,21 @@ def _fiyat_ayristir(urun_soup: BeautifulSoup):
             metin = gizli.get_text(strip=True)
             if "TL" not in metin and "\u20ba" not in metin:
                 continue
-            if "yildiz" in metin.lower():
+            if "yildiz" in metin.lower() or "y\u0131ld\u0131z" in metin.lower():
                 continue
-            if len(metin) > 20:
+            fiyat_m = FIYAT_RE.search(metin)
+            if not fiyat_m:
                 continue
-            sayi = _metin_fiyata(metin)
-            if sayi and sayi > 0:
-                log.debug("Yontem 2: %s", metin)
-                return metin, sayi, "1"
+            sayi = float(fiyat_m.group(1).replace(".", "").replace(",", "."))
+            if sayi > 0:
+                return fiyat_m.group(0).strip(), sayi, "1"
     except Exception as exc:
-        log.debug("Yontem 2 hata: %s", exc)
+        log.debug("Yontem 2 hatasi: %s", exc)
 
     return None, None, "1"
 
 
-def _urun_linki_bul(urun_soup: BeautifulSoup) -> str:
+def _urun_linki_bul(urun_soup: BeautifulSoup):
     asin = urun_soup.get("data-asin", "").strip()
     if asin:
         return f"https://www.amazon.com.tr/dp/{asin}"
@@ -174,23 +156,12 @@ def urun_listesi_cek(sayfa_soup: BeautifulSoup) -> list:
     fiyatsiz = 0
     linksiz  = 0
 
-    ilk_urun_debug = True
     for urun in div_listesi:
         try:
             isim_el = urun.find("h2")
             if not isim_el:
                 continue
             isim = isim_el.get_text(strip=True)
-
-            # İlk üründe TL içeren tüm element metinlerini logla
-            if ilk_urun_debug:
-                ilk_urun_debug = False
-                tl_metinler = [
-                    el.get_text(" ", strip=True)[:80]
-                    for el in urun.find_all(["a", "span"])
-                    if "TL" in el.get_text(" ", strip=True) or "\u20ba" in el.get_text(" ", strip=True)
-                ]
-                log.info("[DEBUG] Ilk urun TL iceren elementler: %s", tl_metinler[:5])
 
             link = _urun_linki_bul(urun)
             if not link:
@@ -214,7 +185,7 @@ def urun_listesi_cek(sayfa_soup: BeautifulSoup) -> list:
                 "stok_adet":  stok,
             })
         except Exception as exc:
-            log.debug("Urun ayristirma hatasi: %s", exc)
+            log.debug("Urun hatasi: %s", exc)
 
     if fiyatsiz:
         log.info("%d urun fiyat bulunamadigi icin atlandi.", fiyatsiz)
