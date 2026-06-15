@@ -97,34 +97,44 @@ def _fiyat_ayristir(urun_soup: BeautifulSoup):
     """
     Dönüş: (fiyat_str, fiyat_float, stok_adet)
 
-    En güvenilir yöntem: Amazon'un offer-listing linkini bul.
-    Bu link her zaman "X TL (N İkinci El ürün)" metnini içerir.
+    Hedef format: "25.459,05 TL (1 İkinci El ürün)"
+    Fiyat kısmının TÜRKÇE para birimi formatında olması zorunlu:
+      - Rakamlar: sadece 0-9, nokta (binlik), virgül (ondalık)
+      - TL veya ₺ ile biter
     """
+    import re as _re
 
-    # ── Yöntem 1: /gp/offer-listing/ href'li link ────────────────────────────
-    # Bu Amazon'un standart "ikinci el seçenekleri" linki.
-    # Metin tam olarak "25.459,05 TL (1 İkinci El ürün)" formatındadır.
+    # Türkçe fiyat formatı: "1.234,56 TL" veya "1234,56 TL" veya "234 TL"
+    FIYAT_REGEX = _re.compile(r"^[\d\.]+,\d{2}\s*(TL|₺)|^\d+\s*(TL|₺)")
+
+    # ── Yöntem 1: "İkinci El" içeren a/span metni ─────────────────────────────
     try:
-        for a in urun_soup.find_all("a", href=True):
-            href = a.get("href", "")
-            if "offer-listing" not in href and "olp" not in href:
+        for el in urun_soup.find_all(["a", "span"]):
+            metin = el.get_text(" ", strip=True)
+
+            # Hem TL/₺ hem "ikinci el" içermeli
+            if ("TL" not in metin and "₺" not in metin):
                 continue
-            # Bu link ikinci el fiyat linki — metnini al
-            metin = a.get_text(" ", strip=True)
-            if not metin:
+            if not _re.search(r"[İi]kinci\s+[Ee]l", metin):
                 continue
-            # Fiyat kısmını ayıkla (parantezden önce)
+
+            # Parantezden önce gelen kısım fiyat olmalı
             fiyat_kismi = metin.split("(")[0].strip()
+
+            # Kesinlikle fiyat formatında olmalı (rakam + TL)
+            if not FIYAT_REGEX.match(fiyat_kismi):
+                continue
+
             sayi = _metin_fiyata(fiyat_kismi)
             if not sayi or sayi <= 0:
                 continue
-            # Stok adedini bul
-            stok_m = re.search(r"\((\d+)\s+[İi]kinci", metin)
-            stok = stok_m.group(1) if stok_m else "1"
-            log.debug("Yöntem 1 (offer-listing): %s TL, %s adet", sayi, stok)
+
+            stok_m = _re.search(r"\((\d+)\s+[İi]kinci", metin)
+            stok   = stok_m.group(1) if stok_m else "1"
+            log.debug("Yontem 1: %s TL, %s adet", sayi, stok)
             return fiyat_kismi, sayi, stok
     except Exception as exc:
-        log.debug("Yöntem 1 hata: %s", exc)
+        log.debug("Yontem 1 hata: %s", exc)
 
     # ── Yöntem 2: .a-price > .a-offscreen (TL zorunlu, yıldız yasak) ─────────
     try:
@@ -133,19 +143,19 @@ def _fiyat_ayristir(urun_soup: BeautifulSoup):
             if not gizli:
                 continue
             metin = gizli.get_text(strip=True)
-            # Kesinlikle TL veya ₺ içermeli; yıldız puanı olmamalı
-            if ("TL" not in metin and "₺" not in metin):
+            if "TL" not in metin and "₺" not in metin:
                 continue
             if "yıldız" in metin.lower() or "yildiz" in metin.lower():
                 continue
+            # Başlangıcı fiyat formatında olmalı
+            if not FIYAT_REGEX.match(metin):
+                continue
             sayi = _metin_fiyata(metin)
             if sayi and sayi > 0:
-                log.debug("Yöntem 2 (a-offscreen): %s", metin)
+                log.debug("Yontem 2: %s", metin)
                 return metin, sayi, "1"
     except Exception as exc:
-        log.debug("Yöntem 2 hata: %s", exc)
-
-    return None, None, "1"
+        log.debug("Yontem 2 hata: %s", exc)
 
     return None, None, "1"
 
