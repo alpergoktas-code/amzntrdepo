@@ -97,43 +97,55 @@ def _fiyat_ayristir(urun_soup: BeautifulSoup):
     """
     Dönüş: (fiyat_str, fiyat_float, stok_adet)
 
-    Yalnızca 'İkinci El' ifadesi geçen metinleri fiyat olarak kabul eder.
-    Bu sayede model numaraları (TH 2200/S) fiyat olarak okunmaz.
+    En güvenilir yöntem: Amazon'un offer-listing linkini bul.
+    Bu link her zaman "X TL (N İkinci El ürün)" metnini içerir.
     """
-    # ── Yöntem 1: "X TL (N İkinci El ürün)" bağlantısı ──────────────────────
-    # Ekran görüntüsünden teyit edilen asıl format budur.
+
+    # ── Yöntem 1: /gp/offer-listing/ href'li link ────────────────────────────
+    # Bu Amazon'un standart "ikinci el seçenekleri" linki.
+    # Metin tam olarak "25.459,05 TL (1 İkinci El ürün)" formatındadır.
     try:
-        for el in urun_soup.find_all(["a", "span"]):
-            metin = el.get_text(" ", strip=True)
-            # Hem TL/₺ hem de "ikinci el" ifadesi gerekli
-            if ("TL" in metin or "₺" in metin) and re.search(
-                r"[İi]kinci\s+[Ee]l", metin
-            ):
-                stok_m = re.search(r"\((\d+)\s+[İi]kinci\s+[Ee]l", metin)
-                stok   = stok_m.group(1) if stok_m else "1"
-                sayi   = _metin_fiyata(metin)
-                if sayi and sayi > 1:   # 1 TL altı muhtemelen ayrıştırma hatası
-                    fiyat_str = metin.split("(")[0].strip()
-                    log.debug("Yöntem 1: %s TL (%s adet)", sayi, stok)
-                    return fiyat_str, sayi, stok
+        for a in urun_soup.find_all("a", href=True):
+            href = a.get("href", "")
+            if "offer-listing" not in href and "olp" not in href:
+                continue
+            # Bu link ikinci el fiyat linki — metnini al
+            metin = a.get_text(" ", strip=True)
+            if not metin:
+                continue
+            # Fiyat kısmını ayıkla (parantezden önce)
+            fiyat_kismi = metin.split("(")[0].strip()
+            sayi = _metin_fiyata(fiyat_kismi)
+            if not sayi or sayi <= 0:
+                continue
+            # Stok adedini bul
+            stok_m = re.search(r"\((\d+)\s+[İi]kinci", metin)
+            stok = stok_m.group(1) if stok_m else "1"
+            log.debug("Yöntem 1 (offer-listing): %s TL, %s adet", sayi, stok)
+            return fiyat_kismi, sayi, stok
     except Exception as exc:
         log.debug("Yöntem 1 hata: %s", exc)
 
-    # ── Yöntem 2: .a-price > .a-offscreen ────────────────────────────────────
+    # ── Yöntem 2: .a-price > .a-offscreen (TL zorunlu, yıldız yasak) ─────────
     try:
-        kutu = urun_soup.find("span", class_="a-price")
-        if kutu:
+        for kutu in urun_soup.find_all("span", class_="a-price"):
             gizli = kutu.find("span", class_="a-offscreen")
-            if gizli:
-                metin = gizli.get_text(strip=True)
-                # TL/₺ içermeyen veya yıldız puanı içeren metinleri atla
-                if ("TL" in metin or "₺" in metin) and "yildiz" not in metin.lower() and "yıldız" not in metin.lower():
-                    sayi = _metin_fiyata(metin)
-                    if sayi and sayi > 1:
-                        log.debug("Yöntem 2: %s", metin)
-                        return metin, sayi, "1"
+            if not gizli:
+                continue
+            metin = gizli.get_text(strip=True)
+            # Kesinlikle TL veya ₺ içermeli; yıldız puanı olmamalı
+            if ("TL" not in metin and "₺" not in metin):
+                continue
+            if "yıldız" in metin.lower() or "yildiz" in metin.lower():
+                continue
+            sayi = _metin_fiyata(metin)
+            if sayi and sayi > 0:
+                log.debug("Yöntem 2 (a-offscreen): %s", metin)
+                return metin, sayi, "1"
     except Exception as exc:
         log.debug("Yöntem 2 hata: %s", exc)
+
+    return None, None, "1"
 
     return None, None, "1"
 
