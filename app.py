@@ -29,6 +29,18 @@ if not TOKEN or not CHAT_ID:
     log.critical("TOKEN veya CHAT_ID eksik!")
     sys.exit(1)
 
+
+# Kitap tespiti icin anahtar kelimeler
+KITAP_KELIMELERI = [
+    "ciltli kapak", "ciltli", "ciltsiz", "kitap",
+    "kagit kapak", "kağıt kapak", "karton kapak",
+]
+
+def kitap_mi(isim):
+    isim_lower = isim.lower()
+    return any(k in isim_lower for k in KITAP_KELIMELERI)
+
+
 bot = telebot.TeleBot(TOKEN, threaded=False)
 ilk_tarama_bitti = False
 
@@ -73,15 +85,16 @@ def tara(manuel=False, chat=None):
         if mevcut is None:
             db.urun_kaydet(isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
             if ilk_tarama_bitti or manuel:
-                notifier.yeni_urun_bildir(bot, hedef, u)
-                bildirim += 1
+                if not kitap_mi(isim):
+                    notifier.yeni_urun_bildir(bot, hedef, u)
+                    bildirim += 1
         else:
             eski = mevcut["fiyat"]
             if fiyat < eski:
                 indirim = int(((eski - fiyat) / eski) * 100)
                 db.urun_kaydet(isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
                 db.fiyat_gecmisi_kaydet(isim, eski, fiyat)
-                if indirim >= MIN_INDIRIM:
+                if indirim >= MIN_INDIRIM and not kitap_mi(isim):
                     notifier.fiyat_dustu_bildir(bot, hedef, u, eski, indirim)
                     bildirim += 1
             elif fiyat != eski:
