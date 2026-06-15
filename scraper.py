@@ -45,7 +45,6 @@ def _scraper_url(hedef_url: str, render: bool = False) -> str:
 
 def _sayfa_indir(sayfa_no: int):
     hedef = f"{BASE_URL}&page={sayfa_no}"
-
     for render in (False, True):
         mod = "render=true" if render else "render=false"
         try:
@@ -53,42 +52,41 @@ def _sayfa_indir(sayfa_no: int):
             log.info("Sayfa %d [%s] — HTTP %d, %d byte, %.1f sn",
                      sayfa_no, mod, yanit.status_code, len(yanit.content),
                      yanit.elapsed.total_seconds())
-
             if yanit.status_code != 200:
-                log.warning("Sayfa %d HTTP %d", sayfa_no, yanit.status_code)
                 continue
-
             soup = BeautifulSoup(yanit.content, "html.parser")
-            divler = soup.find_all("div", {"data-component-type": "s-search-result"})
-
-            if divler:
-                log.info("Sayfa %d [%s] — %d ürün div'i bulundu.", sayfa_no, mod, len(divler))
+            if soup.find("div", {"data-component-type": "s-search-result"}):
                 return yanit
-
-            # Div bulunamadı — ne geldiğini teşhis et
             baslik = soup.find("title")
-            baslik_str = baslik.get_text(strip=True) if baslik else "yok"
-            html_kesit = yanit.text[:600].replace("\n", " ").replace("\r", "")
+            html_kesit = yanit.text[:500].replace("\n", " ")
             log.info("Sayfa %d [%s] div=0 | Baslik=[%s] | HTML=%s",
-                     sayfa_no, mod, baslik_str, html_kesit)
-
+                     sayfa_no, mod,
+                     baslik.get_text(strip=True) if baslik else "yok",
+                     html_kesit)
             if not render:
                 log.info("Sayfa %d render=true deneniyor...", sayfa_no)
-
         except requests.RequestException as exc:
             log.error("Sayfa %d [%s] istek hatası: %s", sayfa_no, mod, exc)
-
     return None
 
 
 def _metin_fiyata(metin: str):
+    """
+    'X.XXX,XX TL (N İkinci El ürün)' → float
+
+    Kritik kural: Fiyat metni mutlaka 'TL' veya '₺' içermeli
+    VE sayı virgüllü ondalık formatta olmalı (Türkçe para birimi formatı).
+    Model numaralarını (TH 2200/S gibi) elemek için
+    metnin 'ikinci el' veya '₺'/'TL' içerdiğini kontrol ediyoruz.
+    """
     try:
+        # Parantez içini at
         temiz = metin.split("(")[0]
-        temiz = (
-            temiz
-            .replace("TL", "").replace("₺", "").replace("\xa0", "")
-            .replace(".", "").replace(",", ".").strip()
-        )
+        # TL veya ₺ işaretini kaldır
+        temiz = temiz.replace("TL", "").replace("₺", "").replace("\xa0", "")
+        # Türkçe format: nokta=binlik, virgül=ondalık
+        # Örnek: "1.234,56" → "1234.56"
+        temiz = temiz.replace(".", "").replace(",", ".").strip()
         m = re.search(r"\d+(?:\.\d+)?", temiz)
         return float(m.group()) if m else None
     except Exception:
@@ -96,51 +94,78 @@ def _metin_fiyata(metin: str):
 
 
 def _fiyat_ayristir(urun_soup: BeautifulSoup):
-    # Yöntem 1: "X TL (N İkinci El ürün)" metni
+    """
+    Dönüş: (fiyat_str, fiyat_float, stok_adet)
+
+    Yalnızca 'İkinci El' ifadesi geçen metinleri fiyat olarak kabul eder.
+    Bu sayede model numaraları (TH 2200/S) fiyat olarak okunmaz.
+    """
+    # ── Yöntem 1: "X TL (N İkinci El ürün)" bağlantısı ──────────────────────
+    # Ekran görüntüsünden teyit edilen asıl format budur.
     try:
         for el in urun_soup.find_all(["a", "span"]):
             metin = el.get_text(" ", strip=True)
-            if re.search(r"\d", metin) and ("TL" in metin or "₺" in metin):
+            # Hem TL/₺ hem de "ikinci el" ifadesi gerekli
+            if ("TL" in metin or "₺" in metin) and re.search(
+                r"[İi]kinci\s+[Ee]l", metin
+            ):
                 stok_m = re.search(r"\((\d+)\s+[İi]kinci\s+[Ee]l", metin)
-                if stok_m:
-                    stok = stok_m.group(1)
-                    sayi = _metin_fiyata(metin)
-                    if sayi:
-                        return metin.split("(")[0].strip(), sayi, stok
-    except Exception:
-        pass
+                stok   = stok_m.group(1) if stok_m else "1"
+                sayi   = _metin_fiyata(metin)
+                if sayi and sayi > 1:   # 1 TL altı muhtemelen ayrıştırma hatası
+                    fiyat_str = metin.split("(")[0].strip()
+                    log.debug("Yöntem 1: %s TL (%s adet)", sayi, stok)
+                    return fiyat_str, sayi, stok
+    except Exception as exc:
+        log.debug("Yöntem 1 hata: %s", exc)
 
-    # Yöntem 2: .a-price > .a-offscreen
+    # ── Yöntem 2: .a-price > .a-offscreen ────────────────────────────────────
     try:
         kutu = urun_soup.find("span", class_="a-price")
         if kutu:
             gizli = kutu.find("span", class_="a-offscreen")
             if gizli:
                 metin = gizli.get_text(strip=True)
-                sayi = _metin_fiyata(metin)
-                if sayi:
+                sayi  = _metin_fiyata(metin)
+                if sayi and sayi > 1:
+                    log.debug("Yöntem 2: %s", metin)
                     return metin, sayi, "1"
-    except Exception:
-        pass
-
-    # Yöntem 3: data-a-price
-    try:
-        el = urun_soup.find(attrs={"data-a-price": True})
-        if el:
-            raw = el["data-a-price"]
-            sayi = _metin_fiyata(raw)
-            if sayi:
-                return raw, sayi, "1"
-    except Exception:
-        pass
+    except Exception as exc:
+        log.debug("Yöntem 2 hata: %s", exc)
 
     return None, None, "1"
 
 
+def _urun_linki_bul(urun_soup: BeautifulSoup) -> str:
+    """
+    Ürünün Amazon detay sayfası linkini bulur.
+    Önce data-asin'li div'den ASIN alır, sonra fallback olarak
+    h2 içindeki ilk <a> etiketini dener.
+    """
+    # ASIN varsa standart ürün URL'si oluştur (en güvenilir yöntem)
+    asin = urun_soup.get("data-asin", "").strip()
+    if asin:
+        return f"https://www.amazon.com.tr/dp/{asin}"
+
+    # Fallback: h2 içindeki link
+    try:
+        h2 = urun_soup.find("h2")
+        if h2:
+            a = h2.find("a", href=True)
+            if a and a["href"].startswith("/"):
+                return "https://www.amazon.com.tr" + a["href"]
+    except Exception:
+        pass
+
+    return None   # Link bulunamadı — bu ürün atlanacak
+
+
 def urun_listesi_cek(sayfa_soup: BeautifulSoup) -> list[dict]:
     div_listesi = sayfa_soup.find_all("div", {"data-component-type": "s-search-result"})
+    log.info("Ham ürün div sayısı: %d", len(div_listesi))
     sonuclar = []
     fiyatsiz = 0
+    linksiz  = 0
 
     for urun in div_listesi:
         try:
@@ -149,38 +174,44 @@ def urun_listesi_cek(sayfa_soup: BeautifulSoup) -> list[dict]:
                 continue
             isim = isim_el.get_text(strip=True)
 
+            # Link bulunamazsa ürünü atla (# URL Telegram'ı engelliyor)
+            link = _urun_linki_bul(urun)
+            if not link:
+                linksiz += 1
+                log.debug("Link bulunamadı, atlandı: %.60s", isim)
+                continue
+
             fiyat_str, fiyat_float, stok = _fiyat_ayristir(urun)
             if not fiyat_float:
                 fiyatsiz += 1
+                log.debug("Fiyat bulunamadı, atlandı: %.60s", isim)
                 continue
 
-            gorsel_el = urun.find("img", class_="s-image")
+            gorsel_el  = urun.find("img", class_="s-image")
             gorsel_url = gorsel_el["src"] if gorsel_el else None
 
-            h2 = urun.find("h2")
-            link_el = h2.find("a") if h2 else None
-            link = ("https://www.amazon.com.tr" + link_el["href"]) if link_el else "#"
-
             sonuclar.append({
-                "isim": isim,
-                "fiyat_str": fiyat_str,
-                "fiyat": fiyat_float,
+                "isim":       isim,
+                "fiyat_str":  fiyat_str,
+                "fiyat":      fiyat_float,
                 "gorsel_url": gorsel_url,
-                "link": link,
-                "stok_adet": stok,
+                "link":       link,
+                "stok_adet":  stok,
             })
         except Exception as exc:
             log.debug("Ürün ayrıştırma hatası: %s", exc)
 
     if fiyatsiz:
         log.info("%d ürün fiyat bulunamadığı için atlandı.", fiyatsiz)
+    if linksiz:
+        log.info("%d ürün link bulunamadığı için atlandı.", linksiz)
     return sonuclar
 
 
 def tum_sayfalari_tara() -> list[dict]:
     tum_urunler = []
-    bosh_sayfa = 0
-    sayfa_no = 1
+    bosh_sayfa  = 0
+    sayfa_no    = 1
 
     while True:
         log.info("Sayfa %d taranıyor...", sayfa_no)
@@ -195,7 +226,7 @@ def tum_sayfalari_tara() -> list[dict]:
             sayfa_no += 1
             continue
 
-        soup = BeautifulSoup(yanit.content, "html.parser")
+        soup    = BeautifulSoup(yanit.content, "html.parser")
         urunler = urun_listesi_cek(soup)
 
         if not urunler:
@@ -205,7 +236,8 @@ def tum_sayfalari_tara() -> list[dict]:
         else:
             bosh_sayfa = 0
             tum_urunler.extend(urunler)
-            log.info("Sayfa %d: %d ürün eklendi. Toplam: %d", sayfa_no, len(urunler), len(tum_urunler))
+            log.info("Sayfa %d: %d ürün eklendi. Toplam: %d",
+                     sayfa_no, len(urunler), len(tum_urunler))
 
         sayfa_no += 1
         time.sleep(SAYFA_BEKLEME)
