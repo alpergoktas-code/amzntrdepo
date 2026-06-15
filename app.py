@@ -244,6 +244,12 @@ if __name__ == "__main__":
     # 1. Veritabanı tablolarını hazırla
     db.tablolari_olustur()
 
+    # Veritabanında zaten ürün varsa → daha önce çalışmış demektir.
+    # Sessiz ilk tarama modunu atlayıp doğrudan aktif moda geç.
+    if db.toplam_urun_sayisi() > 0:
+        ilk_tarama_bitti = True
+        log.info("Veritabanında %d ürün mevcut — aktif mod.", db.toplam_urun_sayisi())
+
     # 2. Varsa eski webhook'u temizle
     try:
         bot.remove_webhook()
