@@ -95,48 +95,43 @@ def _metin_fiyata(metin: str):
 
 def _fiyat_ayristir(urun_soup: BeautifulSoup):
     """
-    Dönüş: (fiyat_str, fiyat_float, stok_adet)
-
-    Hedef format: "25.459,05 TL (1 İkinci El ürün)"
-    Fiyat kısmının TÜRKÇE para birimi formatında olması zorunlu:
-      - Rakamlar: sadece 0-9, nokta (binlik), virgül (ondalık)
-      - TL veya ₺ ile biter
+    Donus: (fiyat_str, fiyat_float, stok_adet)
+    Hedef: "25.459,05 TL (1 Ikinci El urun)"
     """
     import re as _re
 
-    # Türkçe fiyat formatı: "1.234,56 TL" veya "1234,56 TL" veya "234 TL"
-    FIYAT_REGEX = _re.compile(r"^[\d\.]+,\d{2}\s*(TL|₺)|^\d+\s*(TL|₺)")
-
-    # ── Yöntem 1: "İkinci El" içeren a/span metni ─────────────────────────────
+    # Yontem 1: "Ikinci El" ve "TL/lira" iceren element
     try:
         for el in urun_soup.find_all(["a", "span"]):
             metin = el.get_text(" ", strip=True)
-
-            # Hem TL/₺ hem "ikinci el" içermeli
             if ("TL" not in metin and "₺" not in metin):
                 continue
-            if not _re.search(r"[İi]kinci\s+[Ee]l", metin):
+            if not _re.search(r"[Iİi]kinci\s+[Ee]l", metin):
                 continue
 
-            # Parantezden önce gelen kısım fiyat olmalı
+            # Parantezden onceki kisim fiyat
             fiyat_kismi = metin.split("(")[0].strip()
 
-            # Kesinlikle fiyat formatında olmalı (rakam + TL)
-            if not FIYAT_REGEX.match(fiyat_kismi):
+            # Fiyat kismi cok uzunsa (urun adi iceriyor) atla
+            if len(fiyat_kismi) > 30:
+                continue
+
+            # Fiyat kisminda rakam olmali
+            if not _re.search(r"\d", fiyat_kismi):
                 continue
 
             sayi = _metin_fiyata(fiyat_kismi)
             if not sayi or sayi <= 0:
                 continue
 
-            stok_m = _re.search(r"\((\d+)\s+[İi]kinci", metin)
-            stok   = stok_m.group(1) if stok_m else "1"
+            stok_m = _re.search(r"\((\d+)\s+[Iİi]kinci", metin)
+            stok = stok_m.group(1) if stok_m else "1"
             log.debug("Yontem 1: %s TL, %s adet", sayi, stok)
             return fiyat_kismi, sayi, stok
     except Exception as exc:
         log.debug("Yontem 1 hata: %s", exc)
 
-    # ── Yöntem 2: .a-price > .a-offscreen (TL zorunlu, yıldız yasak) ─────────
+    # Yontem 2: .a-price > .a-offscreen
     try:
         for kutu in urun_soup.find_all("span", class_="a-price"):
             gizli = kutu.find("span", class_="a-offscreen")
@@ -145,10 +140,9 @@ def _fiyat_ayristir(urun_soup: BeautifulSoup):
             metin = gizli.get_text(strip=True)
             if "TL" not in metin and "₺" not in metin:
                 continue
-            if "yıldız" in metin.lower() or "yildiz" in metin.lower():
+            if "yildiz" in metin.lower() or "yıldız" in metin.lower():
                 continue
-            # Başlangıcı fiyat formatında olmalı
-            if not FIYAT_REGEX.match(metin):
+            if len(metin) > 20:
                 continue
             sayi = _metin_fiyata(metin)
             if sayi and sayi > 0:
