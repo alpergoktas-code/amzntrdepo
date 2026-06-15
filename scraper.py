@@ -126,10 +126,12 @@ def _fiyat_ayristir(urun_soup: BeautifulSoup):
             gizli = kutu.find("span", class_="a-offscreen")
             if gizli:
                 metin = gizli.get_text(strip=True)
-                sayi  = _metin_fiyata(metin)
-                if sayi and sayi > 1:
-                    log.debug("Yöntem 2: %s", metin)
-                    return metin, sayi, "1"
+                # TL/₺ içermeyen veya yıldız puanı içeren metinleri atla
+                if ("TL" in metin or "₺" in metin) and "yildiz" not in metin.lower() and "yıldız" not in metin.lower():
+                    sayi = _metin_fiyata(metin)
+                    if sayi and sayi > 1:
+                        log.debug("Yöntem 2: %s", metin)
+                        return metin, sayi, "1"
     except Exception as exc:
         log.debug("Yöntem 2 hata: %s", exc)
 
