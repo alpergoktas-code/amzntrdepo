@@ -32,11 +32,27 @@ if not TOKEN or not CHAT_ID:
 
 # Kitap tespiti icin anahtar kelimeler
 KITAP_KELIMELERI = [
+    # Turkce
     "ciltli kapak", "ciltli", "ciltsiz", "kitap",
-    "kagit kapak", "kağıt kapak", "karton kapak",
+    "kagit kapak", "kagıt kapak", "kağıt kapak", "karton kapak",
+    "tam metin", "roman (", "seri)", "kutu set",
+    # Yayinevleri ve format belirteçleri
+    "penguin classics", "oxford world", "wordsworth",
+    "paperback", "hardcover", "hardback",
+    # Amazon kategorisi belirteci
+    "(kitaplar)", "| kitap",
 ]
 
-def kitap_mi(isim):
+def kitap_mi(isim, link=""):
+    # Yontem 1: ASIN kontrolu (en guvenilir)
+    # Kitaplarin ASIN'i ISBN-10 formatinda olup rakamla baslar (0 veya 1)
+    # Diger urunlerin ASIN'i "B" harfiyle baslar (ornek: B08N5WRWNW)
+    if "/dp/" in link:
+        asin = link.split("/dp/")[1].split("?")[0].split("/")[0]
+        if asin and asin[0].isdigit():
+            return True
+
+    # Yontem 2: Baslik anahtar kelimesi (yedek)
     isim_lower = isim.lower()
     return any(k in isim_lower for k in KITAP_KELIMELERI)
 
@@ -85,7 +101,7 @@ def tara(manuel=False, chat=None):
         if mevcut is None:
             db.urun_kaydet(isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
             if ilk_tarama_bitti or manuel:
-                if not kitap_mi(isim):
+                if not kitap_mi(isim, u.get("link", "")):
                     notifier.yeni_urun_bildir(bot, hedef, u)
                     bildirim += 1
         else:
@@ -94,7 +110,7 @@ def tara(manuel=False, chat=None):
                 indirim = int(((eski - fiyat) / eski) * 100)
                 db.urun_kaydet(isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
                 db.fiyat_gecmisi_kaydet(isim, eski, fiyat)
-                if indirim >= MIN_INDIRIM and not kitap_mi(isim):
+                if indirim >= MIN_INDIRIM and not kitap_mi(isim, u.get("link", "")):
                     notifier.fiyat_dustu_bildir(bot, hedef, u, eski, indirim)
                     bildirim += 1
             elif fiyat != eski:
