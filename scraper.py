@@ -35,22 +35,56 @@ def _scraper_url(hedef_url, render=False):
     return url
 
 
+# Direkt istek icin tarayici gibi gorunen headers
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+
+
+def _urun_div_var_mi(yanit):
+    """Gelen HTML'de urun div'i var mi kontrol et."""
+    soup = BeautifulSoup(yanit.content, "html.parser")
+    return bool(soup.find("div", {"data-component-type": "s-search-result"}))
+
+
 def _sayfa_indir(sayfa_no):
     hedef = BASE_URL + "&page=" + str(sayfa_no)
+
+    # 1. Direkt istek (kredi harcamaz)
+    try:
+        yanit = requests.get(hedef, headers=HEADERS, timeout=30)
+        log.info("Sayfa %d [direkt] — HTTP %d, %d byte",
+                 sayfa_no, yanit.status_code, len(yanit.content))
+        if yanit.status_code == 200 and _urun_div_var_mi(yanit):
+            return yanit
+        log.info("Sayfa %d direkt calismiyor, ScraperAPI deneniyor...", sayfa_no)
+    except Exception as exc:
+        log.warning("Sayfa %d direkt hata: %s", sayfa_no, exc)
+
+    # 2. ScraperAPI (kredi harcar, sadece gerekirse)
+    if not SCRAPER_KEY:
+        log.warning("SCRAPERAPI_KEY tanimli degil, sayfa atlaniyor.")
+        return None
+
     for render in (False, True):
         mod = "render=true" if render else "render=false"
         try:
             yanit = requests.get(_scraper_url(hedef, render=render), timeout=ISTEK_TIMEOUT)
-            log.info("Sayfa %d [%s] — HTTP %d, %d byte", sayfa_no, mod, yanit.status_code, len(yanit.content))
-            if yanit.status_code != 200:
-                continue
-            soup = BeautifulSoup(yanit.content, "html.parser")
-            if soup.find("div", {"data-component-type": "s-search-result"}):
+            log.info("Sayfa %d [scraper/%s] — HTTP %d, %d byte",
+                     sayfa_no, mod, yanit.status_code, len(yanit.content))
+            if yanit.status_code == 200 and _urun_div_var_mi(yanit):
                 return yanit
             if not render:
                 log.info("Sayfa %d render=true deneniyor...", sayfa_no)
         except Exception as exc:
-            log.error("Sayfa %d [%s] hata: %s", sayfa_no, mod, exc)
+            log.error("Sayfa %d [scraper/%s] hata: %s", sayfa_no, mod, exc)
+
     return None
 
 
