@@ -95,11 +95,12 @@ def tara(manuel=False, chat=None):
 
     for u in urunler:
         isim  = u["isim"]
+        asin  = u["asin"]
         fiyat = u["fiyat"]
-        mevcut = db.urun_getir(isim)
+        mevcut = db.urun_getir(asin)
 
         if mevcut is None:
-            db.urun_kaydet(isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
+            db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
             if ilk_tarama_bitti or manuel:
                 if not kitap_mi(isim, u.get("link", "")):
                     notifier.yeni_urun_bildir(bot, hedef, u)
@@ -108,13 +109,13 @@ def tara(manuel=False, chat=None):
             eski = mevcut["fiyat"]
             if fiyat < eski:
                 indirim = int(((eski - fiyat) / eski) * 100)
-                db.urun_kaydet(isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
-                db.fiyat_gecmisi_kaydet(isim, eski, fiyat)
+                db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
+                db.fiyat_gecmisi_kaydet(asin, isim, eski, fiyat)
                 if indirim >= MIN_INDIRIM and not kitap_mi(isim, u.get("link", "")):
                     notifier.fiyat_dustu_bildir(bot, hedef, u, eski, indirim)
                     bildirim += 1
             elif fiyat != eski:
-                db.urun_kaydet(isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
+                db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
 
     db.ayar_yaz("son_tarama", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 

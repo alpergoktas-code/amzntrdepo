@@ -146,6 +146,7 @@ def urun_listesi_cek(sayfa_soup):
             gorsel = urun.find("img", class_="s-image")
             sonuclar.append({
                 "isim":       isim,
+                "asin":       asin,
                 "fiyat_str":  fiyat_str,
                 "fiyat":      fiyat,
                 "gorsel_url": gorsel["src"] if gorsel else None,
