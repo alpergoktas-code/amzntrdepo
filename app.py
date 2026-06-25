@@ -23,7 +23,7 @@ TOKEN   = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 MIN_INDIRIM = 10   # yuzde
-ARALIK      = 900  # saniye (15 dakika)
+ARALIK      = 2700  # saniye (45 dakika)
 
 if not TOKEN or not CHAT_ID:
     log.critical("TOKEN veya CHAT_ID eksik!")
