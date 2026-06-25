@@ -4,7 +4,7 @@ import time
 import signal
 import logging
 from datetime import datetime
-from threading import Thread
+from threading import Thread, Lock
 
 import telebot
 
@@ -59,6 +59,7 @@ def kitap_mi(isim, link=""):
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 ilk_tarama_bitti = False
+tarama_kilidi = Lock()
 
 
 def kapat(signum, frame):
@@ -78,61 +79,70 @@ def tara(manuel=False, chat=None):
     global ilk_tarama_bitti
     hedef = chat or CHAT_ID
 
-    if manuel:
-        bot.send_message(hedef, "Amazon Depo taranıyor...")
-
-    log.info("Tarama başlıyor (manuel=%s)", manuel)
+    if not tarama_kilidi.acquire(blocking=False):
+        log.info("Tarama zaten devam ediyor, bu cagri atlandi (manuel=%s)", manuel)
+        if manuel:
+            bot.send_message(hedef, "Şu anda başka bir tarama devam ediyor, bitince tekrar dene.")
+        return
 
     try:
-        urunler = scraper.tum_sayfalari_tara()
-    except Exception as exc:
-        log.error("Tarama hatası: %s", exc)
         if manuel:
-            bot.send_message(hedef, "Hata: " + str(exc))
-        return
+            bot.send_message(hedef, "Amazon Depo taranıyor...")
 
-    bildirim = 0
+        log.info("Tarama başlıyor (manuel=%s)", manuel)
 
-    for u in urunler:
-        isim  = u["isim"]
-        asin  = u["asin"]
-        fiyat = u["fiyat"]
         try:
-            mevcut = db.urun_getir(asin)
-
-            if mevcut is None:
-                db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
-                if ilk_tarama_bitti or manuel:
-                    if not kitap_mi(isim, u.get("link", "")):
-                        notifier.yeni_urun_bildir(bot, hedef, u)
-                        bildirim += 1
-            else:
-                eski = mevcut["fiyat"]
-                if fiyat < eski:
-                    indirim = int(((eski - fiyat) / eski) * 100)
-                    db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
-                    db.fiyat_gecmisi_kaydet(asin, isim, eski, fiyat)
-                    if indirim >= MIN_INDIRIM and not kitap_mi(isim, u.get("link", "")):
-                        notifier.fiyat_dustu_bildir(bot, hedef, u, eski, indirim)
-                        bildirim += 1
-                elif fiyat != eski:
-                    db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
+            urunler = scraper.tum_sayfalari_tara()
         except Exception as exc:
-            log.error("Urun isleme hatasi (asin=%s, isim=%s): %s", asin, isim, exc)
-            continue
+            log.error("Tarama hatası: %s", exc)
+            if manuel:
+                bot.send_message(hedef, "Hata: " + str(exc))
+            return
 
-    db.ayar_yaz("son_tarama", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        bildirim = 0
 
-    if not manuel and not ilk_tarama_bitti:
-        ilk_tarama_bitti = True
-        bot.send_message(CHAT_ID,
-            "Bot aktif! " + str(db.toplam_urun()) + " urun hafizaya alindi. "
-            "15 dakikada bir otomatik taranacak."
-        )
-        return
+        for u in urunler:
+            isim  = u["isim"]
+            asin  = u["asin"]
+            fiyat = u["fiyat"]
+            try:
+                mevcut = db.urun_getir(asin)
 
-    if manuel and bildirim == 0:
-        bot.send_message(hedef, "Tarama bitti. Yeni urun veya fiyat dususu yok.")
+                if mevcut is None:
+                    db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
+                    if ilk_tarama_bitti or manuel:
+                        if not kitap_mi(isim, u.get("link", "")):
+                            notifier.yeni_urun_bildir(bot, hedef, u)
+                            bildirim += 1
+                else:
+                    eski = mevcut["fiyat"]
+                    if fiyat < eski:
+                        indirim = int(((eski - fiyat) / eski) * 100)
+                        db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
+                        db.fiyat_gecmisi_kaydet(asin, isim, eski, fiyat)
+                        if indirim >= MIN_INDIRIM and not kitap_mi(isim, u.get("link", "")):
+                            notifier.fiyat_dustu_bildir(bot, hedef, u, eski, indirim)
+                            bildirim += 1
+                    elif fiyat != eski:
+                        db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
+            except Exception as exc:
+                log.error("Urun isleme hatasi (asin=%s, isim=%s): %s", asin, isim, exc)
+                continue
+
+        db.ayar_yaz("son_tarama", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        if not manuel and not ilk_tarama_bitti:
+            ilk_tarama_bitti = True
+            bot.send_message(CHAT_ID,
+                "Bot aktif! " + str(db.toplam_urun()) + " urun hafizaya alindi. "
+                "15 dakikada bir otomatik taranacak."
+            )
+            return
+
+        if manuel and bildirim == 0:
+            bot.send_message(hedef, "Tarama bitti. Yeni urun veya fiyat dususu yok.")
+    finally:
+        tarama_kilidi.release()
 
 
 def otomatik():
