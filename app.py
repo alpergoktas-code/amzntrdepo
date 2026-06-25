@@ -23,7 +23,7 @@ TOKEN   = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 MIN_INDIRIM = 10   # yuzde
-ARALIK      = 2700  # saniye (45 dakika)
+ARALIK      = 900  # saniye (15 dakika)
 
 if not TOKEN or not CHAT_ID:
     log.critical("TOKEN veya CHAT_ID eksik!")
@@ -97,25 +97,29 @@ def tara(manuel=False, chat=None):
         isim  = u["isim"]
         asin  = u["asin"]
         fiyat = u["fiyat"]
-        mevcut = db.urun_getir(asin)
+        try:
+            mevcut = db.urun_getir(asin)
 
-        if mevcut is None:
-            db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
-            if ilk_tarama_bitti or manuel:
-                if not kitap_mi(isim, u.get("link", "")):
-                    notifier.yeni_urun_bildir(bot, hedef, u)
-                    bildirim += 1
-        else:
-            eski = mevcut["fiyat"]
-            if fiyat < eski:
-                indirim = int(((eski - fiyat) / eski) * 100)
+            if mevcut is None:
                 db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
-                db.fiyat_gecmisi_kaydet(asin, isim, eski, fiyat)
-                if indirim >= MIN_INDIRIM and not kitap_mi(isim, u.get("link", "")):
-                    notifier.fiyat_dustu_bildir(bot, hedef, u, eski, indirim)
-                    bildirim += 1
-            elif fiyat != eski:
-                db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
+                if ilk_tarama_bitti or manuel:
+                    if not kitap_mi(isim, u.get("link", "")):
+                        notifier.yeni_urun_bildir(bot, hedef, u)
+                        bildirim += 1
+            else:
+                eski = mevcut["fiyat"]
+                if fiyat < eski:
+                    indirim = int(((eski - fiyat) / eski) * 100)
+                    db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
+                    db.fiyat_gecmisi_kaydet(asin, isim, eski, fiyat)
+                    if indirim >= MIN_INDIRIM and not kitap_mi(isim, u.get("link", "")):
+                        notifier.fiyat_dustu_bildir(bot, hedef, u, eski, indirim)
+                        bildirim += 1
+                elif fiyat != eski:
+                    db.urun_kaydet(asin, isim, fiyat, u["gorsel_url"], u["link"], u["stok_adet"])
+        except Exception as exc:
+            log.error("Urun isleme hatasi (asin=%s, isim=%s): %s", asin, isim, exc)
+            continue
 
     db.ayar_yaz("son_tarama", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 

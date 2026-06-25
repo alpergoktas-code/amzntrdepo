@@ -122,8 +122,58 @@ def _asin_migrasyonu():
                     (asin, isim)
                 )
 
-        # Artik duplike olmadigina gore unique index'i guvenle olustur
+        _isim_unique_kisitini_kaldir(conn)
+
+
+def _isim_unique_kisitini_kaldir(conn):
+    """
+    Eski semada 'isim' sutunu UNIQUE idi. SQLite'ta ALTER TABLE ile
+    sutun kisitlamasi kaldirilamadigi icin bu kisitlama hala duruyor
+    olabilir. Iki farkli ASIN'in adi ayni metne denk geldiginde
+    ('UNIQUE constraint failed: urunler.isim') urun_kaydet patlar.
+    Bu durumu tespit edip tabloyu kisitlama olmadan yeniden kuruyoruz.
+    """
+    indexler = conn.execute("PRAGMA index_list(urunler)").fetchall()
+    isim_unique_var = False
+    for idx in indexler:
+        if not idx["unique"]:
+            continue
+        kolonlar = [c["name"] for c in conn.execute(f"PRAGMA index_info({idx['name']})").fetchall()]
+        if kolonlar == ["isim"]:
+            isim_unique_var = True
+            break
+
+    if not isim_unique_var:
+        # Kisitlama yok (yeni kurulum ya da zaten temizlenmis); index'in
+        # var oldugundan emin ol ve cik.
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_urunler_asin ON urunler(asin)")
+        return
+
+    log.warning("Migrasyon: eski 'isim UNIQUE' kisitlamasi bulundu, tablo yeniden kuruluyor...")
+
+    conn.execute("DROP INDEX IF EXISTS idx_urunler_asin")
+    conn.execute("ALTER TABLE urunler RENAME TO urunler_eski_tmp")
+    conn.execute("""
+        CREATE TABLE urunler (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            asin        TEXT,
+            isim        TEXT NOT NULL,
+            fiyat       REAL NOT NULL,
+            gorsel_url  TEXT,
+            link        TEXT,
+            stok_adet   TEXT,
+            guncellendi TEXT DEFAULT (datetime('now','localtime'))
+        )
+    """)
+    conn.execute("""
+        INSERT INTO urunler (id, asin, isim, fiyat, gorsel_url, link, stok_adet, guncellendi)
+        SELECT id, asin, isim, fiyat, gorsel_url, link, stok_adet, guncellendi
+        FROM urunler_eski_tmp
+    """)
+    conn.execute("DROP TABLE urunler_eski_tmp")
+    conn.execute("CREATE UNIQUE INDEX idx_urunler_asin ON urunler(asin)")
+
+    log.warning("Migrasyon: 'isim UNIQUE' kisitlamasi kaldirildi, tablo asin bazli yeniden kuruldu.")
 
 
 def urun_getir(asin):
